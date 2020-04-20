@@ -259,7 +259,6 @@ export default {
             return this.framework.scanStatus === 'removed'
         },
         availableFrameworks () {
-            console.log({ Frameworks })
             return Frameworks
         },
         frameworkType () {

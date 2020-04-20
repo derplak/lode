@@ -5,6 +5,7 @@
             `status--${status}`,
             `is-${selectStatus}`,
             `is-${expandStatus}`,
+            loading ? 'is-loading': '',
             hasChildren ? 'has-children' : ''
         ]"
         tabindex="0"
@@ -23,16 +24,31 @@
             </div>
         </div>
         <div v-if="hasChildren && show" class="nugget-items">
-            <slot></slot>
+            <!--
+            :running="running"
+            :selectable="canToggleTests"
+            @open="openFile"
+            @activate="onChildActivation"
+            -->
+            <Test
+                v-for="test in tests"
+                :key="test.id"
+                :test="test"
+            />
         </div>
     </div>
 </template>
 
 <script>
+import { ipcRenderer } from 'electron'
 import { mapGetters } from 'vuex'
+import HasStatus from '@/components/mixins/HasStatus'
 
 export default {
     name: 'Nugget',
+    mixins: [
+        HasStatus
+    ],
     props: {
         model: {
             type: Object,
@@ -42,21 +58,24 @@ export default {
             type: Boolean,
             default: true
         },
-        expanded: {
-            type: Boolean,
-            default: false
-        },
         handler: {
             type: Function,
             default: null
         }
     },
+    data () {
+        return {
+            expanded: !!this.model.expanded,
+            loading: false,
+            tests: []
+        }
+    },
     computed: {
-        show () {
-            return this.model.expanded
+        identifier () {
+            return this.model.id || this.model.file
         },
-        status () {
-            return this.model.getStatus()
+        show () {
+            return this.expanded
         },
         selectStatus () {
             return this.model.selected ? 'selected' : 'unselected'
@@ -73,7 +92,7 @@ export default {
         // If nugget is already in context (i.e. persisted contexts) then expand
         // it, because in all likelihood a child test will have to be activated,
         // in which case it needs to be mounted first.
-        if (this.inContext(this.model.getId())) {
+        if (this.inContext(this.identifier)) {
             this.model.toggleExpanded()
         }
     },
@@ -89,6 +108,7 @@ export default {
                 this.$el.focus()
                 return
             }
+
             this.toggleChildren(event)
         },
         handleKeydown (event) {
@@ -116,7 +136,29 @@ export default {
             if (!this.hasChildren) {
                 return
             }
-            this.model.toggleExpanded(!this.model.expanded, this.$input.hasAltKey(event))
+
+            console.log('toggling children', this.model)
+            if (!this.expanded) {
+                this.loading = true
+                return new Promise((resolve, reject) => {
+                    ipcRenderer
+                        .once('tests', (event, tests) => {
+                            this.tests = tests
+                            this.expanded = true
+                            this.loading = false
+                            resolve()
+                        })
+
+                    this.$emit(`expand`, this.identifier)
+                })
+            }
+
+            this.expanded = false
+            this.tests = []
+            return Promise.resolve()
+
+            // @TODO: recursive with alt key
+            // this.model.toggleExpanded(!this.model.expanded, this.$input.hasAltKey(event))
         },
 
         /**

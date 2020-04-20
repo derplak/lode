@@ -2,13 +2,22 @@ import * as Path from 'path'
 import * as Fs from 'fs-extra'
 import latinize from 'latinize'
 import { v4 as uuid } from 'uuid'
-import { find, findIndex, sortBy, uniqBy } from 'lodash'
+import { find, findIndex, omit, sortBy, uniqBy } from 'lodash'
 import { EventEmitter } from 'events'
 import { app } from 'electron'
 import ElectronStore from 'electron-store'
+import LinvoDB from 'linvodb3'
+import * as db from 'leveldown'
 import { Project } from '@lib/state/project'
 import { Migrator } from '@lib/state/migrator'
 import { ProjectIdentifier } from '@lib/frameworks/project'
+import { ISuiteResult } from '@lib/frameworks/suite'
+import { ITestResult } from '@lib/frameworks/test'
+
+export type Database = {
+    suites: any
+    tests: any
+}
 
 export class State extends EventEmitter {
     protected store: any
@@ -22,6 +31,11 @@ export class State extends EventEmitter {
         currentProject: null,
         paneSizes: [16, 44, 40],
         projects: []
+    }
+
+    protected db: Database = {
+        suites: null,
+        tests: null
     }
 
     constructor () {
@@ -39,6 +53,93 @@ export class State extends EventEmitter {
 
         if (__MIGRATE__) {
             this.runMigrations()
+        }
+
+        if (!app) {
+            return
+        }
+
+        LinvoDB.defaults.store = { db }
+        LinvoDB.dbPath = app.getPath('userData')
+        this.db = {
+            suites: new LinvoDB('Suites', {
+                file: {
+                    type: String
+                }
+            }),
+            tests: new LinvoDB('Tests', {})
+        }
+        this.db.suites.ensureIndex({ fieldName: "file", unique: true })
+        this.db.tests.ensureIndex({ fieldName: "id", unique: true })
+
+        this.db.suites.count({}, function (err: Error, count: any) {
+            console.log({ err, count })
+        })
+
+        this.db.tests.count({}, function (err: Error, count: any) {
+            console.log({ err, count })
+        })
+
+        // Allow recursive mapping of tests.
+        const mapTests = (tests: any) => {
+            if (tests && tests.length) {
+                return tests.map((test: any) => {
+                    this.db.tests.save({
+                        id: test.id,
+                        name: test.name,
+                        displayName: test.displayName,
+                        status: test.status,
+                        feedback: test.feedback,
+                        console: test.console,
+                        stats: test.stats,
+                        testIds: mapTests(test.tests)
+                    })
+
+                    return test.id
+                })
+            }
+
+            return []
+        }
+
+        // Migrate on load?
+        if (false) {
+            this.getAvailableProjects().forEach(({ id }) => {
+                const projectState = this.project(id)
+                const projectOptions = projectState.get().options
+                projectOptions.repositories.forEach((repository: any, i: number) => {
+                    repository.frameworks.forEach((framework: any, j: number) => {
+                        if (framework.suites) {
+                            framework.suites.forEach((suite: any) => {
+                                this.db.suites.save({
+                                    file: suite.file,
+                                    status: suite.status,
+                                    frameworkId: framework.id,
+                                    testIds: mapTests(suite.tests),
+                                    meta: suite.meta,
+                                    console: suite.console
+                                })
+                            })
+
+                            // After parsing, remove suites.
+                            delete projectOptions.repositories[i].frameworks[j].suites
+                        }
+
+                        if (framework.active) {
+                            projectOptions.active = {
+                                framework: framework.id
+                            }
+                        }
+
+                        // Remove active property from the framework.
+                        delete projectOptions.repositories[i].frameworks[j].active
+                    })
+                })
+
+                projectState.save(projectOptions)
+
+                return true
+            })
         }
     }
 
@@ -182,6 +283,92 @@ export class State extends EventEmitter {
             }]), 'id'))
         }
         return project
+    }
+
+    public async insertSuite (suite: ISuiteResult): Promise<any> {
+        return new Promise((resolve, reject) => {
+            this.db.suites.insert(omit(suite, 'tests'), (error: Error, entry: any) => {
+                return error ? reject(error) : resolve(entry)
+            })
+        })
+    }
+
+    public async saveSuite (suite: ISuiteResult): Promise<void> {
+        return new Promise((resolve, reject) => {
+            this.db.suites.findOne({ file: suite.file }, async (error: Error, entry: any) => {
+                if (error) {
+                    reject(error)
+                    return
+                }
+                if (!entry) {
+                    entry = await this.insertSuite(suite)
+                }
+
+                (Object.keys(<ISuiteResult>omit(suite, 'tests')) as Array<keyof ISuiteResult>)
+                    .forEach((key: keyof ISuiteResult) => {
+                        entry[key] = suite[key]
+                    })
+                    entry.save()
+                    Promise.all((suite.tests || []).map((test: ITestResult) => {
+                        return this.saveTest(test)
+                    })).then(() => {
+                        resolve(entry)
+                    }).catch((error: Error) => {
+                        reject(error)
+                    })
+            })
+        })
+    }
+
+    public async insertTest (test: ITestResult): Promise<any> {
+        return new Promise((resolve, reject) => {
+            this.db.tests.insert(omit(test, 'tests'), (error: Error, entry: any) => {
+                return error ? reject(error) : resolve(entry)
+            })
+        })
+    }
+
+    public async saveTest (test: ITestResult): Promise<void> {
+        return new Promise((resolve, reject) => {
+            this.db.tests.findOne({ id: test.id }, async (error: Error, entry: any) => {
+                if (error) {
+                    reject(error)
+                    return
+                }
+                if (!entry) {
+                    entry = await this.insertTest(test)
+                }
+
+                (Object.keys(<ITestResult>omit(test, 'tests')) as Array<keyof ITestResult>)
+                    .forEach((key: keyof ITestResult) => {
+                        entry[key] = test[key]
+                    })
+                    entry.save()
+                    Promise.all((test.tests || []).map((test: ITestResult) => {
+                        return this.saveTest(test)
+                    })).then(() => {
+                        resolve(entry)
+                    }).catch((error: Error) => {
+                        reject(error)
+                    })
+            })
+        })
+    }
+
+    public async getSuites (frameworkId: string): Promise<Array<ISuiteResult>> {
+        return new Promise((resolve, reject) => {
+            this.db.suites.find({ frameworkId }, ((error: Error, results: Array<ISuiteResult>) => {
+                return error ? reject(error) : resolve(results)
+            }))
+        })
+    }
+
+    public async getTests (testIds: Array<string>): Promise<Array<ITestResult>> {
+        return new Promise((resolve, reject) => {
+            this.db.tests.find({ id: { $in: testIds }}, ((error: Error, results: Array<ITestResult>) => {
+                return error ? reject(error) : resolve(results)
+            }))
+        })
     }
 }
 

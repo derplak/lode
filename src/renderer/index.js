@@ -6,8 +6,7 @@ import store from './store'
 import * as Path from 'path'
 import { isArray, isEmpty } from 'lodash'
 import { clipboard, remote, ipcRenderer, shell } from 'electron'
-import { state } from '@lib/state'
-import { Project } from '@lib/frameworks/project'
+// import { state } from '@lib/state'
 import { Titlebar, Color } from 'custom-electron-titlebar'
 
 // Styles
@@ -69,7 +68,9 @@ export default new Vue({
     },
     computed: {
         progress () {
-            return this.project ? this.project.getProgress() : -1
+            return -1
+            // @TODO: new means of calculating project progress
+            // return this.project ? this.project.getProgress() : -1
         }
     },
     watch: {
@@ -79,14 +80,15 @@ export default new Vue({
     },
     created () {
         this.titlebar()
-        this.loadProject(remote.getCurrentWindow().getProjectOptions())
 
         ipcRenderer
-            .on('did-finish-load', () => {
+            .on('did-finish-load', (event, { focus, projectOptions }) => {
                 document.body.classList.add(`platform-${process.platform}`)
-                if (remote.getCurrentWindow().isFocused()) {
+                if (focus) {
                     document.body.classList.add('is-focused')
                 }
+
+                this.loadProject(projectOptions)
             })
             .on('blur', () => {
                 document.body.classList.remove('is-focused')
@@ -119,7 +121,7 @@ export default new Vue({
                     case 'new-project':
                         this.addProject()
                         break
-                    case 'switch-project':
+                    case 'project-switch':
                         this.switchProject(properties)
                         break
                     case 'select-all':
@@ -144,23 +146,25 @@ export default new Vue({
                         this.addRepositories()
                         break
                     case 'log-project':
-                        const projectState = state.project(this.project.getId())
-                        log.info({
-                            project: {
-                                object: this.project,
-                                string: JSON.stringify(this.project)
-                            },
-                            state: {
-                                json: projectState.get(),
-                                string: JSON.stringify(projectState.get())
-                            }
-                        })
+                        // @TODO: Log to main, not renderer
+                        // const projectState = state.project(this.project.getId())
+                        // log.info({
+                        //     project: {
+                        //         object: this.project,
+                        //         string: JSON.stringify(this.project)
+                        //     },
+                        //     state: {
+                        //         json: projectState.get(),
+                        //         string: JSON.stringify(projectState.get())
+                        //     }
+                        // })
                         break
                     case 'log-settings':
-                        log.info({
-                            object: state.get(),
-                            json: JSON.stringify(state.get())
-                        })
+                        // @TODO: Log to main, not renderer
+                        // log.info({
+                        //     object: state.get(),
+                        //     json: JSON.stringify(state.get())
+                        // })
                         break
                     case 'crash':
                         this.crash()
@@ -172,7 +176,6 @@ export default new Vue({
                         this.$modal.confirm('ResetSettings')
                             .then(() => {
                                 ipcRenderer.sendSync('reset-settings')
-                                remote.getCurrentWindow().reload()
                             })
                             .catch(() => {})
                         break
@@ -221,8 +224,11 @@ export default new Vue({
         },
         loadProject (projectOptions) {
             projectOptions = JSON.parse(projectOptions)
-            this.project = isEmpty(projectOptions) ? null : new Project(projectOptions)
+            this.project = isEmpty(projectOptions) ? null : projectOptions
             this.refreshApplicationMenu()
+        },
+        saveProject (projectOptions) {
+            ipcRenderer.send('project-save', projectOptions)
         },
         addProject () {
             this.$modal.confirm('EditProject', { add: true })
@@ -230,7 +236,7 @@ export default new Vue({
                     // Stop current project before adding a new one.
                     (this.project ? this.project.stop() : Promise.resolve()).then(() => {
                         store.commit('context/CLEAR')
-                        const project = new Project(options)
+                        const project = options
                         ipcRenderer.once('project-switched', () => {
                             this.addRepositories()
                         })
@@ -242,8 +248,7 @@ export default new Vue({
         editProject () {
             this.$modal.confirm('EditProject')
                 .then(options => {
-                    this.project.updateOptions(options)
-                    this.project.save()
+                    this.saveProject(options)
 
                     // Since current project hasn't changed, just been updated,
                     // we need to forcibly emit the change to the main process,
@@ -257,21 +262,24 @@ export default new Vue({
                 .then(() => {
                     this.project.stop().then(() => {
                         store.commit('context/CLEAR')
-                        const switchTo = state.removeProject(this.project.getId())
-                        // Switch information should be available only
-                        // if there are still projects to switch to.
-                        if (switchTo) {
-                            this.handleSwitchProject(switchTo)
-                        } else {
-                            this.loadProject(null)
-                        }
+                        // @TODO: Don't use state, or use simplified state that
+                        // can be shared between main and renderer
+
+                        // const switchTo = state.removeProject(this.project.getId())
+                        // // Switch information should be available only
+                        // // if there are still projects to switch to.
+                        // if (switchTo) {
+                        //     this.handleSwitchProject(switchTo)
+                        // } else {
+                        //     this.loadProject(null)
+                        // }
                     })
                 })
                 .catch(() => {})
         },
         switchProject (projectId) {
             // Clicking on current project shouldn't have any effect.
-            if (projectId === this.project.getId()) {
+            if (projectId === this.project.id) {
                 // Windows will uncheck the project regardless of it being
                 // selected already, so refresh the menu to undo it.
                 if (__WIN32__) {
@@ -281,16 +289,22 @@ export default new Vue({
             }
 
             this.$modal.confirmIf(() => {
-                return this.project.status === 'idle' ? false : state.get('confirm.switchProject')
+                return true
+                // @TODO: Don't use state, or use simplified state that
+                // can be shared between main and renderer
+
+                // return this.project.status === 'idle' ? false : state.get('confirm.switchProject')
             }, 'ConfirmSwitchProject')
                 .then(disableConfirm => {
-                    if (disableConfirm) {
-                        state.set('confirm.switchProject', false)
-                    }
-                    this.project.stop().then(() => {
-                        store.commit('context/CLEAR')
-                        this.handleSwitchProject(projectId)
-                    })
+                    // @TODO: Don't use state, or use simplified state that
+                    // can be shared between main and renderer
+
+                    // if (disableConfirm) {
+                    //     state.set('confirm.switchProject', false)
+                    // }
+
+                    store.commit('context/CLEAR')
+                    this.handleSwitchProject(projectId)
                 })
                 .catch(() => {
                     // Windows will check the project regardless of
@@ -301,7 +315,10 @@ export default new Vue({
                 })
         },
         handleSwitchProject (projectId) {
-            ipcRenderer.send('switch-project', projectId)
+            // @TODO: flag the renderer with a transient state, because
+            // the switch is async and the main process will attempt to stop
+            // the project if it's running before completing the switch.
+            ipcRenderer.send('project-switch', projectId)
         },
         addRepositories (directories) {
             if (!isArray(directories)) {
@@ -338,11 +355,21 @@ export default new Vue({
                 scan: true
             }, callback)
         },
+        loadSuites (frameworkId) {
+            console.log('loading suites', frameworkId)
+            return new Promise((resolve, reject) => {
+                ipcRenderer
+                    .once('framework-suites', (event, suites) => {
+                        resolve({ frameworkId, suites })
+                    })
+                    .send('framework-get-suites', frameworkId)
+            })
+        },
         refreshApplicationMenu () {
-            ipcRenderer.send('refresh-menu')
+            ipcRenderer.send('menu-refresh')
         },
         setApplicationMenuOption (options = {}) {
-            ipcRenderer.send('set-menu-options', options)
+            ipcRenderer.send('menu-set-options', options)
         },
         openExternal (link) {
             shell.openExternal(link)

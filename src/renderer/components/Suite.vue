@@ -3,9 +3,10 @@
         :model="suite"
         class="suite"
         :class="{ 'is-child-active': isChildActive }"
-        :has-children="suite.testsLoaded() && suite.hasChildren()"
+        :has-children="suite.testIds.length > 0"
         @contextmenu.native.stop.prevent="onContextMenu"
         @keydown.native.self.stop.prevent.space="onSelectiveClick"
+        @expand="$emit('expand', $event)"
     >
         <template slot="header">
             <div class="selective-toggle" :class="{ disabled: running }" @mousedown.prevent.stop="onSelectiveClick">
@@ -21,17 +22,8 @@
                     @mousedown.stop="onSelectiveClick"
                 >
             </div>
-            <Filename :path="relativePath" :key="relativePath" />
+            <Filename :path="suite.file" :key="suite.file" />
         </template>
-        <Test
-            v-for="test in suite.tests"
-            :key="test.getId()"
-            :test="test"
-            :running="running"
-            :selectable="canToggleTests"
-            @open="openFile"
-            @activate="onChildActivation"
-        />
     </Nugget>
 </template>
 
@@ -73,13 +65,10 @@ export default {
             return this.suite.testsLoaded()
         },
         isChildActive () {
-            return this.context.indexOf(this.suite.getId()) > -1
-        },
-        relativePath () {
-            return this.suite.isHighlighted() ? this.suite.getHighlight() : this.suite.getRelativePath()
+            return this.context.indexOf(this.suite.id) > -1
         },
         filePath () {
-            return this.suite.getFilePath()
+            return this.suite.file
         },
         remoteFilePath () {
             return this.suite.file !== this.filePath ? this.suite.file : false
@@ -103,7 +92,7 @@ export default {
         },
         onChildActivation (context) {
             context.unshift(this.suite)
-            this.$store.commit('context/ADD', this.suite.getId())
+            this.$store.commit('context/ADD', this.suite.id)
             this.$emit('activate', context)
         },
         onContextMenu (event) {

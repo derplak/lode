@@ -11,23 +11,20 @@ export interface ITest extends Nugget {
     getName (): string
     getDisplayName (): string
     getConsole (): Array<any>
+    getTestIds (): Array<string>
     toggleSelected (toggle?: boolean, cascade?: boolean): Promise<void>
     toggleExpanded (toggle?: boolean, cascade?: boolean): Promise<void>
     persist (status?: Status | false): ITestResult
     resetResult (): void
-    idle (selective: boolean): void
-    queue (selective: boolean): void
-    error (selective: boolean): void
-    idleQueued (selective: boolean): void
-    errorQueued (selective: boolean): void
+    idle (selective: boolean): Promise<void>
+    queue (selective: boolean): Promise<void>
+    error (selective: boolean): Promise<void>
+    idleQueued (selective: boolean): Promise<void>
+    errorQueued (selective: boolean): Promise<void>
     debrief (result: ITestResult, cleanup: boolean): Promise<void>
     countChildren (): number
     hasChildren(): boolean
     contextMenu (): Array<Electron.MenuItemConstructorOptions>
-    getLastUpdated (): string | null
-    getLastRun (): string | null
-    getTotalDuration (): number
-    getMaxDuration (): number
 }
 
 export interface ITestResult {
@@ -40,6 +37,7 @@ export interface ITestResult {
     params?: string
     stats?: object
     isLast?: boolean
+    testIds?: Array<string>
     tests?: Array<ITestResult>
 }
 
@@ -79,8 +77,8 @@ export class Test extends Nugget implements ITest {
         // We allow result status to be empty from reporters, but we'll
         // amend them before building the actual test.
         result.status = this.getRecursiveStatus(result)
-        this.updateStatus(result.status || 'idle')
         this.result = this.mergeResults(result)
+        this.updateStatus(result.status || 'idle')
         if (result.tests && result.tests.length) {
             this.debriefTests(result.tests, cleanup)
         }

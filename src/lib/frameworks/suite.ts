@@ -1,5 +1,6 @@
 import * as Path from 'path'
 import { get, escapeRegExp } from 'lodash'
+import { state } from '@lib/state'
 import { Status, parseStatus } from '@lib/frameworks/status'
 import { ITest, ITestResult, Test } from '@lib/frameworks/test'
 import { Nugget } from '@lib/frameworks/nugget'
@@ -28,15 +29,16 @@ export interface ISuite extends Nugget {
     getMeta (): any
     resetMeta (): void
     getConsole (): Array<any>
+    getTestIds (): Array<string>
     testsLoaded (): boolean
     rebuildTests (result: ISuiteResult): void
     toggleSelected (toggle?: boolean, cascade?: boolean): Promise<void>
     toggleExpanded (toggle?: boolean, cascade?: boolean): Promise<void>
-    idle (selective: boolean): void
-    queue (selective: boolean): void
-    error (selective: boolean): void
-    idleQueued (selective: boolean): void
-    errorQueued (selective: boolean): void
+    idle (selective: boolean): Promise<void>
+    queue (selective: boolean): Promise<void>
+    error (selective: boolean): Promise<void>
+    idleQueued (selective: boolean): Promise<void>
+    errorQueued (selective: boolean): Promise<void>
     debrief (result: ISuiteResult, selective: boolean): Promise<void>
     persist (): ISuiteResult
     refresh (options: SuiteOptions): void
@@ -49,19 +51,16 @@ export interface ISuite extends Nugget {
     isHighlighted (): boolean
     contextMenu (): Array<Electron.MenuItemConstructorOptions>
     getRunningOrder (): number | null
-    getLastUpdated (): string | null
-    getLastRun (): string | null
-    getTotalDuration (): number
-    getMaxDuration (): number
 }
 
 export interface ISuiteResult {
     file: string
-    tests?: Array<ITestResult>
+    status?: Status
     meta?: object | null
     console?: Array<any>
     testsLoaded?: boolean
-    version?: string
+    testIds?: Array<string>
+    tests?: Array<ITestResult>
 }
 
 export class Suite extends Nugget implements ISuite {
@@ -82,6 +81,7 @@ export class Suite extends Nugget implements ISuite {
         options.remotePath = options.remotePath || ''
         this.remotePath = options.remotePath.startsWith('/') ? options.remotePath : '/' + options.remotePath
         this.build(result)
+        this.save()
     }
 
     /**
@@ -90,11 +90,10 @@ export class Suite extends Nugget implements ISuite {
     public persist (): ISuiteResult {
         return {
             file: this.file,
-            meta: this.getMeta(),
+            status: this.getStatus(),
+            meta: this.getMeta() || null,
             testsLoaded: this.testsLoaded(),
-            tests: this.bloomed
-                ? this.tests.map((test: ITest) => test.persist())
-                : this.getTestResults().map((test: ITestResult) => this.defaults(test)),
+            testIds: this.testIds
         }
     }
 
@@ -168,11 +167,11 @@ export class Suite extends Nugget implements ISuite {
      *
      * @param to The status we're updating to.
      */
-    protected updateStatus (to?: Status): void {
+    protected async updateStatus (to?: Status): Promise<void> {
         if (typeof to === 'undefined') {
             const statuses = this.bloomed
                 ? this.tests.map((test: ITest) => test.getStatus())
-                : this.getTestResults().map((test: ITestResult) => test.status)
+                : (await this.getTestResults()).map((test: ITestResult) => test.status)
             to = parseStatus(statuses)
             if (to === 'empty' && !this.testsLoaded()) {
                 to = 'idle'
@@ -273,7 +272,7 @@ export class Suite extends Nugget implements ISuite {
      * Whether this suite's tests are loaded.
      */
     public testsLoaded (): boolean {
-        return this.result.testsLoaded!
+        return this.result.testsLoaded !== false
     }
 
     /**
@@ -293,6 +292,7 @@ export class Suite extends Nugget implements ISuite {
             this.bloom().then(() => {
                 this.debriefTests(result.tests || [], cleanup)
                     .then(() => {
+                        this.save()
                         resolve()
                     })
             })
@@ -344,5 +344,11 @@ export class Suite extends Nugget implements ISuite {
      */
     public isHighlighted (): boolean {
         return !!this.highlighted
+    }
+
+    protected save (): void {
+        state.saveSuite(this.persist()).then(() => {
+            log.debug(`Finished saving suite ${this.getId()}`)
+        })
     }
 }

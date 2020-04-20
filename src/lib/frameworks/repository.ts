@@ -3,8 +3,8 @@ import { Glob } from 'glob'
 import { pathExistsSync } from 'fs-extra'
 import { v4 as uuid } from 'uuid'
 import { findIndex } from 'lodash'
-import { EventEmitter } from 'events'
 import { Frameworks } from '@lib/frameworks'
+import { ProjectEventEmitter } from '@lib/frameworks/emitter'
 import { FrameworkStatus, parseFrameworkStatus } from '@lib/frameworks/status'
 import { ProgressLedger } from '@lib/frameworks/progress'
 import { FrameworkFactory } from '@lib/frameworks/factory'
@@ -14,9 +14,10 @@ import { FrameworkOptions, IFramework } from '@lib/frameworks/framework'
  * Options to instantiate a Project with.
  */
 export type RepositoryOptions = {
-    id?: string,
+    id?: string
     name?: string
     path: string
+    status?: FrameworkStatus
     expanded?: boolean
     frameworks?: Array<FrameworkOptions>
 }
@@ -30,7 +31,7 @@ export type ParsedRepository = {
     files: Array<string>
 }
 
-export interface IRepository extends EventEmitter {
+export interface IRepository extends ProjectEventEmitter {
     frameworks: Array<IFramework>
     status: FrameworkStatus
     selected: boolean
@@ -45,7 +46,7 @@ export interface IRepository extends EventEmitter {
     scan (): Promise<Array<FrameworkOptions>>
     toggle (): void
     isRunning (): boolean
-    isRrefreshing (): boolean
+    isRefreshing (): boolean
     isBusy (): boolean
     isExpanded (): boolean
     persist (): RepositoryOptions
@@ -59,7 +60,7 @@ export interface IRepository extends EventEmitter {
     resetProgressLedger (): void
 }
 
-export class Repository extends EventEmitter implements IRepository {
+export class Repository extends ProjectEventEmitter implements IRepository {
     public frameworks: Array<IFramework> = []
     public status: FrameworkStatus = 'loading'
     public selected: boolean = false
@@ -131,8 +132,8 @@ export class Repository extends EventEmitter implements IRepository {
     /**
      * Whether this repository is refreshing.
      */
-    public isRrefreshing (): boolean {
-        return this.frameworks.some((framework: IFramework) => framework.isRrefreshing())
+    public isRefreshing (): boolean {
+        return this.frameworks.some((framework: IFramework) => framework.isRefreshing())
     }
 
     /**
@@ -157,8 +158,9 @@ export class Repository extends EventEmitter implements IRepository {
             id: this.id,
             name: this.name,
             path: this.path,
+            status: 'idle',
             expanded: this.expanded,
-            frameworks: this.frameworks.map(framework => framework.persist())
+            frameworks: this.frameworks.map((framework: IFramework) => framework.persist())
         }
     }
 
@@ -338,6 +340,7 @@ export class Repository extends EventEmitter implements IRepository {
         return new Promise((resolve, reject) => {
             const framework: IFramework = FrameworkFactory.make({ ...options, ...{ repositoryPath: this.path }})
             framework
+                .on('project-event', this.projectEventListener.bind(this))
                 .on('ready', this.onFrameworkReady.bind(this))
                 .on('status', this.statusListener.bind(this))
                 .on('state', this.stateListener.bind(this))

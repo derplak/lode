@@ -6,7 +6,7 @@ export default {
             menuActive: false,
             menu: new Menu()
                 .add({
-                    label: this.framework.getDisplayName(),
+                    label: this.name,
                     enabled: false
                 })
                 .add({
@@ -46,7 +46,7 @@ export default {
         remove () {
             this.$modal.confirm('RemoveFramework', { framework: this.framework })
                 .then(() => {
-                    this.$emit('remove', this.framework.getId())
+                    this.$emit('remove', this.framework.id)
                 })
                 .catch(() => {})
         }

@@ -302,7 +302,7 @@ export class DefaultProcess extends EventEmitter implements IProcess {
                         this.emit('report', { report })
 
                         if (__DEV__) {
-                            console.log(report)
+                            // log.debug(report)
                         }
 
                         // If reporting succeeded, remove it from buffer.

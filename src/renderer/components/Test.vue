@@ -24,17 +24,6 @@
             </div>
             <div class="test-name" :title="displayName">{{ displayName }}</div>
         </template>
-        <template v-if="hasChildren">
-            <Test
-                v-for="child in test.tests"
-                :key="child.getId()"
-                :test="child"
-                :running="running"
-                :selectable="selectable"
-                @open="$emit('open')"
-                @activate="onChildActivation"
-            />
-        </template>
     </Nugget>
 </template>
 
@@ -64,10 +53,10 @@ export default {
     },
     computed: {
         hasChildren () {
-            return this.test.hasChildren()
+            return this.test.testIds.length > 0
         },
         isChildActive () {
-            return this.context.indexOf(this.test.getId()) > -1
+            return this.context.indexOf(this.test.id) > -1
         },
         selected: {
             get () {
@@ -78,13 +67,13 @@ export default {
             }
         },
         displayName () {
-            return this.test.getDisplayName()
+            return this.test.displayName
         },
         originalName () {
             return this.test.getName() !== this.displayName ? this.test.getName() : false
         },
         isActive () {
-            if (this.test.getId() === this.testActive) {
+            if (this.test.id === this.testActive) {
                 return true
             }
             this.deactivate()
@@ -98,7 +87,7 @@ export default {
     mounted () {
         // If test is already active (i.e. persisted contexts) trigger
         // activation sequence.
-        if (this.test.getId() === this.testActive) {
+        if (this.test.id === this.testActive) {
             this.activate()
         }
     },
@@ -150,18 +139,18 @@ export default {
         },
         activate () {
             this.$el.focus()
-            this.$store.commit('context/TEST', this.test.getId())
-            this.test.setActive(true)
+            this.$store.commit('context/TEST', this.test.id)
+            // this.test.setActive(true)
             setTimeout(() => {
                 this.$emit('activate', [this.test])
             })
         },
         deactivate () {
-            this.test.setActive(false)
+            // this.test.setActive(false)
         },
         onChildActivation (context) {
             context.unshift(this.test)
-            this.$store.commit('context/ADD', this.test.getId())
+            this.$store.commit('context/ADD', this.test.id)
             this.$nextTick(() => {
                 this.$emit('activate', context)
             })

@@ -1,8 +1,6 @@
-import { v4 as uuid } from 'uuid'
-import { app, ipcRenderer } from 'electron'
+import { app } from 'electron'
 import { ProcessId, ProcessOptions, IProcess } from './process'
 import { ProcessFactory } from '@lib/process/factory'
-import { ProcessListener } from '@lib/process/listener'
 import pool from '@lib/process/pool'
 
 /**
@@ -17,14 +15,7 @@ export class ProcessBridge {
      * @param options The options for the process we're making.
      */
     public static make (options: ProcessOptions): IProcess {
-        // Are we in the main process? If so, defer to factory.
-        if (typeof app !== 'undefined') {
-            return ProcessFactory.make(options)
-        }
-
-        const id = uuid()
-        ipcRenderer.send('spawn', id, options)
-        return new ProcessListener(id)
+        return ProcessFactory.make(options)
     }
 
     /**
@@ -47,12 +38,6 @@ export class ProcessBridge {
                     })
                     .stop()
             }
-
-            ipcRenderer
-                .on(`${id}:stopped`, () => {
-                    resolve()
-                })
-                .send('stop', id)
         })
     }
 }

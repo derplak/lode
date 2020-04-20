@@ -1,11 +1,19 @@
 import { v4 as uuid } from 'uuid'
 import { findIndex } from 'lodash'
-import { EventEmitter } from 'events'
 import { state } from '@lib/state'
 import { Project as ProjectState } from '@lib/state/project'
+import { ProjectEventEmitter } from '@lib/frameworks/emitter'
 import { FrameworkStatus, parseFrameworkStatus } from '@lib/frameworks/status'
 import { ProgressLedger } from '@lib/frameworks/progress'
 import { RepositoryOptions, IRepository, Repository } from '@lib/frameworks/repository'
+import { FrameworkContext, IFramework } from '@lib/frameworks/framework'
+
+/**
+ * The minimal options to identify a project by.
+ */
+export type ProjectActiveModels = {
+    framework: string | null
+}
 
 /**
  * The minimal options to identify a project by.
@@ -19,12 +27,14 @@ export type ProjectIdentifier = {
  * Options to instantiate a Project with.
  */
 export type ProjectOptions = {
-    id?: string,
+    id?: string
     name: string
+    status?: FrameworkStatus
+    active?: ProjectActiveModels
     repositories?: Array<RepositoryOptions>
 }
 
-export interface IProject extends EventEmitter {
+export interface IProject extends ProjectEventEmitter {
     name: string
     repositories: Array<IRepository>
     status: FrameworkStatus
@@ -35,19 +45,22 @@ export interface IProject extends EventEmitter {
     refresh (): void
     stop (): Promise<void>
     isRunning (): boolean
-    isRrefreshing (): boolean
+    isRefreshing (): boolean
     isBusy (): boolean
     empty (): boolean
     persist (): ProjectOptions
     save (): void
-    updateOptions (options: ProjectOptions): void
+    update (options: ProjectOptions): void
     addRepository (options: RepositoryOptions): Promise<IRepository>
     removeRepository (id: string): void
+    getActive (): ProjectActiveModels
     getRepositoryById (id: string): IRepository | undefined
+    getFrameworkByContext (context: FrameworkContext): IFramework | undefined
     getProgressLedger (): ProgressLedger
+    getProgress (): number
 }
 
-export class Project extends EventEmitter implements IProject {
+export class Project extends ProjectEventEmitter implements IProject {
     public name: string
     public repositories: Array<IRepository> = []
     public status: FrameworkStatus = 'loading'
@@ -55,6 +68,7 @@ export class Project extends EventEmitter implements IProject {
 
     protected readonly id: string
     protected state: ProjectState
+    protected active: ProjectActiveModels
     protected parsed: boolean = false
     protected ready: boolean = false
     protected hasRepositories: boolean = false
@@ -71,6 +85,9 @@ export class Project extends EventEmitter implements IProject {
         const options = this.state.get('options')
         this.initialRepositoryCount = (options.repositories || []).length
         this.hasRepositories = this.initialRepositoryCount > 0
+        this.active = options.active || {
+            framework: null
+        }
 
         // If options include repositories already (i.e. persisted state), add them.
         this.loadRepositories(options.repositories || [])
@@ -79,6 +96,13 @@ export class Project extends EventEmitter implements IProject {
         if (!identifier.id) {
             this.save()
         }
+    }
+
+    /**
+     * Whether to propagate emitted project events.
+     */
+    protected propagateProjectEvents (): boolean {
+        return false
     }
 
     /**
@@ -122,8 +146,8 @@ export class Project extends EventEmitter implements IProject {
     /**
      * Whether this project is refreshing.
      */
-    public isRrefreshing (): boolean {
-        return this.repositories.some((repository: IRepository) => repository.isRrefreshing())
+    public isRefreshing (): boolean {
+        return this.repositories.some((repository: IRepository) => repository.isRefreshing())
     }
 
     /**
@@ -149,6 +173,8 @@ export class Project extends EventEmitter implements IProject {
         return {
             id: this.id,
             name: this.name,
+            status: 'idle',
+            active: this.active,
             repositories: this.repositories.map(repository => repository.persist())
         }
     }
@@ -161,21 +187,19 @@ export class Project extends EventEmitter implements IProject {
     }
 
     /**
+     * Update this project in the persistent store from a given state.
+     *
+     * @param options The new set of options.
+     */
+    public update (options: ProjectOptions): void {
+        this.state.save(options)
+    }
+
+    /**
      * Get this project's id.
      */
     public getId (): string {
         return this.id
-    }
-
-    /**
-     * Update this project's options.
-     *
-     * @param options The new set of options.
-     */
-    public updateOptions (options: ProjectOptions): void {
-        // Currently only the name is editable
-        this.name = options.name
-        state.updateProject({ id: this.id, name: this.name })
     }
 
     /**
@@ -286,6 +310,7 @@ export class Project extends EventEmitter implements IProject {
         return new Promise((resolve, reject) => {
             const repository = new Repository(options)
             repository
+                .on('project-event', this.projectEventListener.bind(this))
                 .on('ready', this.onRepositoryReady.bind(this))
                 .on('status', this.statusListener.bind(this))
                 .on('state', this.stateListener.bind(this))
@@ -318,6 +343,13 @@ export class Project extends EventEmitter implements IProject {
     }
 
     /**
+     * Get the project's active models.
+     */
+    public getActive (): ProjectActiveModels {
+        return this.active
+    }
+
+    /**
      * Retrieve a repository from this project by its id.
      *
      * @param id The id of the repository to retrieve.
@@ -326,6 +358,14 @@ export class Project extends EventEmitter implements IProject {
         const index = findIndex(this.repositories, repository => repository.getId() === id)
         if (index > -1) {
             return this.repositories[index]
+        }
+        return undefined
+    }
+
+    public getFrameworkByContext (context: FrameworkContext): IFramework | undefined {
+        const repository = this.getRepositoryById(context.repository)
+        if (repository) {
+            return repository.getFrameworkById(context.framework)
         }
         return undefined
     }

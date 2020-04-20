@@ -2,18 +2,18 @@
     <div
         class="sidebar-item has-status"
         :class="[
-            `status--${repository.status}`,
+            `status--${status}`,
             menuActive ? 'is-menu-active' : '',
-            repository.frameworks.length ? '' : 'is-empty'
+            isEmpty ? '' : 'is-empty'
         ]"
     >
         <div class="header" @contextmenu="openMenu" @click="toggle">
             <div class="title">
-                <Indicator :status="repository.status" />
+                <Indicator :status="status" />
                 <h4 class="heading">
                     <Icon class="toggle" :symbol="show ? 'chevron-down' : 'chevron-right'" />
-                    <span class="name" :title="repository.name">
-                        {{ repository.name }}
+                    <span class="name" :title="name">
+                        {{ name }}
                     </span>
                 </h4>
             </div>
@@ -27,6 +27,7 @@
 <script>
 import Indicator from '@/components/Indicator'
 import HasRepositoryMenu from '@/components/mixins/HasRepositoryMenu'
+import HasStatus from '@/components/mixins/HasStatus'
 
 export default {
     name: 'SidebarRepository',
@@ -34,31 +35,32 @@ export default {
         Indicator
     },
     mixins: [
-        HasRepositoryMenu
+        HasRepositoryMenu,
+        HasStatus
     ],
-    props: {
-        repository: {
-            type: Object,
-            required: true
+    data () {
+        return {
+            name: this.model.name,
+            isEmpty: !this.model.frameworks.length
         }
     },
     computed: {
         show () {
-            return this.repository.isExpanded()
+            return this.model.expanded
         }
     },
     methods: {
         start () {
-            this.repository.start()
+            this.model.start()
         },
         refresh () {
-            this.repository.refresh()
+            this.model.refresh()
         },
         stop () {
-            this.repository.stop()
+            this.model.stop()
         },
         toggle () {
-            this.repository.toggle()
+            this.model.toggle()
         }
     }
 }

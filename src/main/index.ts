@@ -6,17 +6,17 @@ import Fs from 'fs'
 import { compact } from 'lodash'
 import { app, ipcMain, session, shell } from 'electron'
 import { applicationMenu } from './menu'
-import { Window } from './window'
+import { BrowserWindow, Window } from './window'
 import { Updater } from './updater'
 import { openDirectorySafe } from './shell'
 import { LogLevel } from '@lib/logger/levels'
 import { mergeEnvFromShell } from '@lib/process/shell'
 import { state } from '@lib/state'
 import { log as writeLog } from '@lib/logger'
-import { ProcessOptions, IProcess } from '@lib/process/process'
-import { ProcessFactory } from '@lib/process/factory'
-import { ProcessError } from '@lib/process/errors'
-import pool from '@lib/process/pool'
+import { ProjectOptions } from '@lib/frameworks/project'
+import { FrameworkContext } from '@lib/frameworks/framework'
+import { ISuiteResult, ISuite } from '@lib/frameworks/suite'
+import { ITestResult } from '@lib/frameworks/test'
 
 // Expose garbage collector
 app.commandLine.appendSwitch('js-flags', '--expose_gc')
@@ -105,12 +105,17 @@ ipcMain
         // marked as being from the "main" process.
         writeLog(level, message)
     })
-    .on('refresh-menu', (event: Electron.IpcMainEvent) => {
+    .on('reset-settings', (event: Electron.IpcMainEvent) => {
+        state.reset()
+        const window = (BrowserWindow.fromWebContents(event.sender) as BrowserWindow)
+        window.reload()
+    })
+    .on('menu-refresh', (event: Electron.IpcMainEvent) => {
         applicationMenu.build().then((template: Array<Electron.MenuItemConstructorOptions>) => {
             event.sender.send('menu-updated', template)
         })
     })
-    .on('set-menu-options', (event: Electron.IpcMainEvent, options: any) => {
+    .on('menu-set-options', (event: Electron.IpcMainEvent, options: any) => {
         applicationMenu.setOptions(options).then((template: Array<Electron.MenuItemConstructorOptions>) => {
             event.sender.send('menu-updated', template)
         })
@@ -122,44 +127,71 @@ ipcMain
             }
         })
     })
-    .on('switch-project', (event: Electron.IpcMainEvent, projectId: string) => {
+    .on('project-save', (event: Electron.IpcMainEvent, projectOptions: ProjectOptions) => {
+            const project = (BrowserWindow.fromWebContents(event.sender) as BrowserWindow).getProject()
+            if (project) {
+                project.update(projectOptions)
+            }
+        })
+    .on('project-switch', (event: Electron.IpcMainEvent, projectId: string) => {
         state.set('currentProject', projectId)
-        if (mainWindow) {
-            mainWindow.setProject(projectId)
-            event.sender.send('project-switched', mainWindow.getProjectOptions())
-        }
-    })
-    .on('reset-settings', (event: Electron.IpcMainEvent) => {
-        state.reset()
-        event.returnValue = true
-    })
-    .on('spawn', (event: Electron.IpcMainEvent, id: string, options: ProcessOptions) => {
-        const process: IProcess = ProcessFactory.make(options, id)
-        const events = ['close', 'killed', 'report', 'success']
-        events.forEach((eventType: string) => {
-            process.on(eventType, (...args: any) => {
-                event.sender.send(`${id}:${eventType}`, ...args)
-            })
-        })
-        // If an error occurs, pass the error object as string instead of
-        // letting it be serialized. Should we ever want to do anything with
-        // the added properties of a ProcessError, we should revist this.
-        process.on('error', (error: ProcessError) => {
-            event.sender.send(`${id}:error`, error.toString())
-        })
-    })
-    .on('stop', (event: Electron.IpcMainEvent, id: string) => {
-        const running = pool.findProcess(id)
-        if (!running) {
-            event.sender.send(`${id}:stopped`)
-            return
+        const window = (BrowserWindow.fromWebContents(event.sender) as BrowserWindow)
+        const doSwitch = () => {
+            window.setProject(projectId)
+            event.sender.send('project-switched', window.getProjectOptions())
         }
 
-        running!
-            .on('killed', () => {
-                event.sender.send(`${id}:stopped`)
-            })
-            .stop()
+        // If window has an active project, stop it before doing the switch.
+        const project = window.getProject()
+        if (project) {
+            project.stop().then(doSwitch)
+            return
+        }
+        doSwitch()
+    })
+    .on('framework-get-suites', (event: Electron.IpcMainEvent, frameworkId: string) => {
+        state.getSuites(frameworkId).then((suites: Array<ISuiteResult>) => {
+            event.sender.send('framework-suites', suites)
+        })
+    })
+    .on('framework-start', (event: Electron.IpcMainEvent, context: FrameworkContext) => {
+        const project = (BrowserWindow.fromWebContents(event.sender) as BrowserWindow).getProject()
+        if (project) {
+            const framework = project.getFrameworkByContext(context)
+            if (framework) {
+                framework.start()
+                return
+            }
+        }
+        log.error(`Unable to find framework to run with context '${JSON.stringify(context)}'`)
+    })
+    .on('framework-stop', (event: Electron.IpcMainEvent, context: FrameworkContext) => {
+        const project = (BrowserWindow.fromWebContents(event.sender) as BrowserWindow).getProject()
+        if (project) {
+            const framework = project.getFrameworkByContext(context)
+            if (framework) {
+                framework.stop()
+                return
+            }
+        }
+        log.error(`Unable to find framework to run with context '${JSON.stringify(context)}'`)
+    })
+    .on('expand-suite', async (event: Electron.IpcMainEvent, context: FrameworkContext, identifier: string) => {
+        const project = (BrowserWindow.fromWebContents(event.sender) as BrowserWindow).getProject()
+        if (project) {
+            const framework = project.getFrameworkByContext(context)
+            if (framework) {
+                const suite: ISuite | undefined = framework.getSuiteByIdentifier(identifier)
+                if (suite) {
+                    await suite.toggleExpanded()
+                    console.log('HEY', suite, suite.getTestIds())
+                    state.getTests(suite.getTestIds()).then((tests: Array<ITestResult>) => {
+                        event.sender.send('tests', tests)
+                    })
+                }
+            }
+        }
+        log.error(`Unable to find framework to run with context '${JSON.stringify(context)}'`)
     })
     .on('show-item-in-folder', (event: Electron.IpcMainEvent, path: string) => {
         Fs.stat(path, (err, stats) => {

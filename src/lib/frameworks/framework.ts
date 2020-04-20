@@ -3,10 +3,11 @@ import * as Fs from 'fs-extra'
 import { chunk, find, findIndex, get, orderBy, trim, trimStart } from 'lodash'
 import { v4 as uuid } from 'uuid'
 import * as fuzzy from 'fuzzysearch'
-import { EventEmitter } from 'events'
+import { state } from '@lib/state'
 import { ProcessId, IProcess } from '@lib/process/process'
 import { ProcessBridge } from '@lib/process/bridge'
 import { queue } from '@lib/process/queue'
+import { ProjectEventEmitter } from '@lib/frameworks/emitter'
 import { ParsedRepository } from '@lib/frameworks/repository'
 import { Suite, ISuite, ISuiteResult } from '@lib/frameworks/suite'
 import { FrameworkStatus, Status, StatusLedger, parseStatus } from '@lib/frameworks/status'
@@ -14,6 +15,14 @@ import { ProgressLedger } from '@lib/frameworks/progress'
 import { FrameworkSort, sortOptions, sortDirection } from '@lib/frameworks/sort'
 import { FrameworkValidator } from '@lib/frameworks/validator'
 import { SSHOptions } from '@lib/process/ssh'
+
+/**
+ * Context to identify a framework with.
+ */
+export type FrameworkContext = {
+    repository: string
+    framework: string
+}
 
 /**
  * A list of test suites.
@@ -44,7 +53,7 @@ export type FrameworkOptions = {
     sshUser?: string | null
     sshPort?: number | null
     sshIdentity?: string | null
-    active?: boolean
+    status?: FrameworkStatus
     suites?: Array<ISuiteResult>
     scanStatus?: 'pending' | 'removed'
     proprietary: any
@@ -56,16 +65,16 @@ export type FrameworkOptions = {
  * An object to declare default framework options.
  */
 export type FrameworkDefaults = {
-    all: FrameworkOptions,
-    darwin?: object,
-    win32?: object,
+    all: FrameworkOptions
+    darwin?: object
+    win32?: object
     linux?: object
 }
 
 /**
  * The Framework interface.
  */
-export interface IFramework extends EventEmitter {
+export interface IFramework extends ProjectEventEmitter {
     name: string
     type: string
     command: string
@@ -89,16 +98,15 @@ export interface IFramework extends EventEmitter {
     refresh (): void
     stop (): Promise<void>
     isRunning (): boolean
-    isRrefreshing (): boolean
+    isRefreshing (): boolean
     isBusy (): boolean
     empty (): boolean
     count (): number
     persist (): FrameworkOptions
     save (): void
     updateOptions (options: FrameworkOptions): void
-    setActive (active: boolean): void
-    isActive (): boolean
     isSelective (): boolean
+    getSuiteByIdentifier (identifier: string): ISuite | undefined
     getSuites (): Array<ISuite>
     getSelected (): SuiteList
     setFilter (filter: FrameworkFilter, value: Array<string> | string | null): void
@@ -119,7 +127,7 @@ export interface IFramework extends EventEmitter {
  * The Framework class represents a testing framework (e.g. Jest, PHPUnit)
  * and contains a set of test suites (files).
  */
-export abstract class Framework extends EventEmitter implements IFramework {
+export abstract class Framework extends ProjectEventEmitter implements IFramework {
     public name!: string
     public type!: string
     public command!: string
@@ -153,7 +161,6 @@ export abstract class Framework extends EventEmitter implements IFramework {
     protected initialSuiteReady: number = 0
     protected hasSuites: boolean = false
     protected proprietary: any = {}
-    protected active: boolean = false
     protected filters: { [key in FrameworkFilter]: Array<string> | string | null } = {
         keyword: null,
         status: null,
@@ -216,15 +223,13 @@ export abstract class Framework extends EventEmitter implements IFramework {
         this.proprietary = options.proprietary || {
             ...(this.constructor as typeof Framework).getDefaults().proprietary
         }
-        this.active = options.active || false
         this.sort = options.sort || (this.constructor as typeof Framework).sortDefault
         this.sortReverse = options.sortReverse || false
 
-        this.initialSuiteCount = (options.suites || []).length
         this.hasSuites = this.initialSuiteCount > 0
 
         // If options include suites already (i.e. persisted state), add them.
-        this.loadSuites(options.suites || [])
+        this.loadSuites()
     }
 
     /**
@@ -352,11 +357,10 @@ export abstract class Framework extends EventEmitter implements IFramework {
             sshUser: this.sshUser,
             sshPort: this.sshPort,
             sshIdentity: this.sshIdentity,
-            active: this.active,
+            status: 'idle',
             proprietary: this.proprietary,
             sort: this.sort,
-            sortReverse: this.sortReverse,
-            suites: this.suites.map((suite: ISuite) => suite.persist())
+            sortReverse: this.sortReverse
         }
     }
 
@@ -533,7 +537,7 @@ export abstract class Framework extends EventEmitter implements IFramework {
     /**
      * Whether this framework is refreshing.
      */
-    public isRrefreshing (): boolean {
+    public isRefreshing (): boolean {
         return this.status === 'refreshing'
     }
 
@@ -541,7 +545,7 @@ export abstract class Framework extends EventEmitter implements IFramework {
      * Whether this framework is busy.
      */
     public isBusy (): boolean {
-        return this.isRunning() || this.isRrefreshing() || this.status === 'queued'
+        return this.isRunning() || this.isRefreshing() || this.status === 'queued'
     }
 
     /**
@@ -893,6 +897,7 @@ export abstract class Framework extends EventEmitter implements IFramework {
             if (!suite) {
                 suite = this.newSuite(result)
                 suite
+                    .on('project-event', this.projectEventListener.bind(this))
                     .on('selective', this.updateSelected.bind(this))
                     .on('status', this.updateLedger.bind(this))
                 this.updateLedger(suite.getStatus())
@@ -959,10 +964,9 @@ export abstract class Framework extends EventEmitter implements IFramework {
 
     /**
      * Load a group of suites to this project on first instantiation.
-     *
-     * @param suites The suites to add to this project.
      */
-    protected async loadSuites (suites: Array<ISuiteResult>): Promise<void> {
+    protected async loadSuites (): Promise<void> {
+        const suites: Array<ISuiteResult> = await state.getSuites(this.getId())
         return new Promise((resolve, reject) => {
             setTimeout(() => {
                 Promise.all(suites.map((result: ISuiteResult) => {
@@ -1192,27 +1196,20 @@ export abstract class Framework extends EventEmitter implements IFramework {
     }
 
     /**
-     * Set the active state of a framework.
-     *
-     * @param active The active state to set.
-     */
-    public setActive (active: boolean): void {
-        this.active = active
-        this.emit('change', this)
-    }
-
-    /**
-     * Get the active state of a framework.
-     */
-    public isActive (): boolean {
-        return this.active
-    }
-
-    /**
      * Whether the framework has any selected suites.
      */
     public isSelective (): boolean {
         return this.selective
+    }
+
+    /**
+     * Find a given suite in this framework by its identifier.
+     *
+     * @param identifier The unique identifier string
+     */
+    public getSuiteByIdentifier (identifier: string): ISuite | undefined {
+        console.log(this.suites, identifier)
+        return find(this.suites, { file: identifier })
     }
 
     /**
@@ -1403,14 +1400,6 @@ export abstract class Framework extends EventEmitter implements IFramework {
                 return suite.getRunningOrder()
             case 'name':
                 return suite.getDisplayName()
-            case 'updated':
-                return suite.getLastUpdated()
-            case 'run':
-                return suite.getLastRun()
-            case 'duration':
-                return suite.getTotalDuration()
-            case 'maxduration':
-                return suite.getMaxDuration()
             default:
                 return null
         }
